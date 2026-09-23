@@ -2,7 +2,6 @@ dist/
 node_modules/
 
 index.legacy.html
-PROMPT.md
 
 *.orig.png
 
