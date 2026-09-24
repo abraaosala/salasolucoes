@@ -1,4 +1,10 @@
-@import "tailwindcss";
-*{scroll-behavior:smooth}
-body{font-family:Poppins,sans-serif}
-.script{font-family:Caveat,cursive}
+@import 'tailwindcss';
+* {
+  scroll-behavior: smooth;
+}
+body {
+  font-family: Poppins, sans-serif;
+}
+.script {
+  font-family: Caveat, cursive;
+}
