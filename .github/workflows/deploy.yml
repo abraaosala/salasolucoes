@@ -1,0 +1,151 @@
+# ─────────────────────────────────────────────────────────────
+#  Deploy da Landing (Sala Soluções) para o Hostinger via SSH
+#
+#  Fluxo: CI + build → deploy para STAGING → health check
+#         → deploy para PRODUÇÃO → health check.
+#
+#  O build (dist/) é publicado DIRETAMENTE NA RAIZ do public_html
+#  (swap atómico: upload para .dist-staging, fora do domínio,
+#  depois troca no lugar). As Variables apontam para o public_html.
+#
+#  Pré-requisitos (uma vez — Settings → Secrets and variables):
+#    Secrets (Actions):
+#      SSH_HOST  → servidor SSH (ex: 31.220.106.101)
+#      SSH_USER  → utilizador SSH
+#      SSH_KEY   → chave privada SSH
+#      SSH_PORT  → porta SSH personalizada
+#    Variables (Actions):
+#      STAGING_PATH → caminho remoto do staging
+#                     (ex: /home/usuario/domains/staging.salasolucoes.com/public_html)
+#      PROD_PATH    → caminho remoto de produção
+#                     (ex: /home/usuario/domains/salasolucoes.com/public_html)
+#      STAGING_URL  → URL do staging para health check
+#                     (ex: https://staging.salasolucoes.com)
+#      PROD_URL     → URL de produção para health check
+#                     (ex: https://salasolucoes.com)
+# ─────────────────────────────────────────────────────────────
+name: Deploy (CI/CD)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Tests
+        run: npm run test
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      - name: Build
+        run: npm run build
+
+      - name: Verificar dist
+        run: |
+          test -f dist/index.html
+          ls dist/assets/*.js > /dev/null
+
+      - name: Guardar build como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: ./dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Deploy para STAGING (rsync atómico)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          STAGING_PATH: ${{ vars.STAGING_PATH }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          REMOTE="$SSH_USER@$SSH_HOST"
+          BASE="$(dirname "$STAGING_PATH")"
+
+          rsync -a --delete -e "ssh $SSH_OPTS" ./dist/ "$REMOTE":"$BASE/.dist-staging/"
+          ssh $SSH_OPTS "$REMOTE" "cd '$STAGING_PATH' && rsync -a --delete '../.dist-staging/' ./ && rm -rf '../.dist-staging'"
+
+      - name: Health check (STAGING)
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 30 "$STAGING_URL")
+            echo "Tentativa $attempt: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Staging OK (HTTP $code)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check falhou no staging: HTTP $code"
+          exit 1
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+
+      - name: Deploy para PRODUÇÃO (rsync atómico)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          PROD_PATH: ${{ vars.PROD_PATH }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -p $SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          REMOTE="$SSH_USER@$SSH_HOST"
+          BASE="$(dirname "$PROD_PATH")"
+
+          rsync -a --delete -e "ssh $SSH_OPTS" ./dist/ "$REMOTE":"$BASE/.dist-staging/"
+          ssh $SSH_OPTS "$REMOTE" "cd '$PROD_PATH' && rsync -a --delete '../.dist-staging/' ./ && rm -rf '../.dist-staging'"
+
+      - name: Health check (PRODUÇÃO)
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 30 "$PROD_URL")
+            echo "Tentativa $attempt: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Produção OK (HTTP $code)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check falhou na produção: HTTP $code"
+          exit 1
+        env:
+          PROD_URL: ${{ vars.PROD_URL }}
