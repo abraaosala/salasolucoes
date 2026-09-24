@@ -1,0 +1,7 @@
+dist
+node_modules
+package-lock.json
+.github
+PROMPT.md
+README.md
+CI-CD-PERGUNTAS.md
